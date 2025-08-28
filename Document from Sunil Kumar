@@ -1,0 +1,92 @@
+import mysql.connector
+import face_recognition
+import cv2
+import getpass
+import speech_recognition as sr
+import re
+
+def capture_current_user_photo():
+    camera = cv2.VideoCapture(0)
+    return_value, image = camera.read()
+    cv2.imwrite('current_user.jpg', image)
+    camera.release()
+    return 'current_user.jpg'
+
+def compare_photos(saved_photo_path, current_photo_path):
+    saved_image = face_recognition.load_image_file(saved_photo_path)
+    current_image = face_recognition.load_image_file(current_photo_path)
+
+    saved_face_encodings = face_recognition.face_encodings(saved_image)
+    current_face_encodings = face_recognition.face_encodings(current_image)
+
+    if not saved_face_encodings or not current_face_encodings:
+        return False
+
+    return face_recognition.compare_faces([saved_face_encodings[0]], current_face_encodings[0])[0]
+
+def recognize_speech():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        print("Please say the withdrawal amount:")
+        audio = recognizer.listen(source)
+
+    try:
+        text = recognizer.recognize_google(audio)
+        return text
+    except sr.UnknownValueError:
+        print("Google Speech Recognition could not understand audio")
+        return ""
+    except sr.RequestError as e:
+        print(f"Could not request results from Google Speech Recognition service; {e}")
+        return ""
+
+def extract_numbers(text):
+    number_matches = re.findall(r'[0-9]+(?:\.[0-9]+)?', text)
+    if number_matches:
+        number_text = "".join(number_matches)
+        return float(number_text)
+    else:
+        return None
+
+connection = mysql.connector.connect(
+    host="localhost",
+    user="root",
+    password="ak",
+    database="account_system"
+)
+
+current_user_photo_path = capture_current_user_photo()
+
+cursor = connection.cursor()
+cursor.execute("SELECT id, photo_path, name, account_balance, password FROM accounts")
+rows = cursor.fetchall()
+
+user_found = False
+for row in rows:
+    saved_photo_path, name, account_balance, stored_password = row[1:]
+    
+    if compare_photos(saved_photo_path, current_user_photo_path):
+        entered_password = int(input("Enter the password for {name}: "))
+        
+        if entered_password == stored_password:
+            user_found = True
+            withdrawal_amount_text = recognize_speech()
+            withdrawal_amount = extract_numbers(withdrawal_amount_text)
+            
+            if withdrawal_amount is not None:
+                if withdrawal_amount <= account_balance:
+                    new_balance = float(account_balance) - withdrawal_amount
+                    cursor.execute("UPDATE accounts SET account_balance = %s WHERE id = %s", (new_balance, row[0]))
+                    connection.commit()
+                    print(f"Withdrawal successful for {name}. Your new balance is: {new_balance}")
+                else:
+                    print(f"Insufficient balance for {name}.")
+            else:
+                print("Invalid withdrawal amount. Please try again.")
+            break
+
+if not user_found:
+    print("User not found.")
+
+cursor.close()
+connection.close()
